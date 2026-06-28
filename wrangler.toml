@@ -1,0 +1,24 @@
+# Wrangler configuration for Cloudflare DoH Platform
+name = "cloudflare-doh-platform"
+main = "worker.js"
+compatibility_date = "2026-06-28"
+
+[vars]
+# System-wide static configurations
+JWT_SECRET = "CHANGE_ME_IN_PRODUCTION_JWT_SECRET_KEY" # Used for Admin panel JWT auth
+ENVIRONMENT = "production"
+
+# Cloudflare D1 Database Binding
+[[d1_databases]]
+binding = "DB"
+database_name = "doh-dns-db"
+database_id = "your-d1-database-uuid" # Replace with 'wrangler d1 create doh-dns-db' output
+
+# Cloudflare KV Namespace Binding (for Cache & Rate Limiting)
+[[kv_namespaces]]
+binding = "CACHE_KV"
+id = "your-kv-namespace-uuid" # Replace with 'wrangler kv:namespace create CACHE_KV' output
+
+# Build configurations (optional if using extra bundling, but standard ES Modules work natively)
+[build]
+upload = { format = "modules" }

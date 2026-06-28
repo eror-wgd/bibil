@@ -1,0 +1,6 @@
+{
+  "name": "Cloudflare DoH Platform",
+  "description": "A complete, production-ready Cloudflare Workers DNS over HTTPS platform with multi-upstream DNS, user management, traffic accounting, statistics, settings, and full worker deployment assets.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
