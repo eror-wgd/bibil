@@ -12,13 +12,17 @@ ENVIRONMENT = "production"
 [[d1_databases]]
 binding = "DB"
 database_name = "doh-dns-db"
-database_id = "0a7ae9a8-c5f1-42ea-8811-deec972213a4" # Replace with 'wrangler d1 create doh-dns-db' output
+database_id = "your-d1-database-uuid" # Replace with 'wrangler d1 create doh-dns-db' output
 
 # Cloudflare KV Namespace Binding (for Cache & Rate Limiting)
 [[kv_namespaces]]
 binding = "CACHE_KV"
-id = "7afe187dd9f94370b9eedee94e3d0983" # Replace with 'wrangler kv:namespace create CACHE_KV' output
+id = "your-kv-namespace-uuid" # Replace with 'wrangler kv:namespace create CACHE_KV' output
 
 # Cloudflare Workers Assets Configuration (Serves the compiled React App)
 [assets]
 directory = "./dist"
+
+[build]
+command = "npm run build"
+
