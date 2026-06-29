@@ -608,8 +608,8 @@ async function getCachedUser(env, apiToken) {
   // Query D1 Database
   try {
     const user = await env.DB.prepare(
-      "SELECT id, username, email, api_token, status, created_at, expire_at, traffic_limit_gb, traffic_used, request_count FROM users WHERE LOWER(api_token) = LOWER(?)"
-    ).bind(trimmedToken).first();
+      "SELECT id, username, email, api_token, status, created_at, expire_at, traffic_limit_gb, traffic_used, request_count FROM users WHERE api_token = ? OR api_token = ?"
+    ).bind(trimmedToken, cacheKey).first();
 
     if (user) {
       // Save to KV and local memory
@@ -724,13 +724,32 @@ async function handleApiRequest(request, env, ctx, url, settings) {
           id, username, email, api_token, now, expTimestamp, parseFloat(traffic_limit_gb || "50"), notes || ""
         ).run();
 
-        // Clear any stale cache for this token to make sure it functions immediately
+        // Immediately pre-seed the KV and local memory cache with the newly created user object
+        // This guarantees instant authentication against /dns-query without any write lag
+        const newUserObj = {
+          id,
+          username,
+          email,
+          api_token,
+          status: "enabled",
+          created_at: now,
+          expire_at: expTimestamp,
+          traffic_limit_gb: parseFloat(traffic_limit_gb || "50"),
+          traffic_used: 0.0,
+          request_count: 0,
+          notes: notes || ""
+        };
+
         if (env.CACHE_KV) {
-          await env.CACHE_KV.delete(`user:${api_token}`);
-          await env.CACHE_KV.delete(`user:${api_token.toLowerCase()}`);
+          try {
+            await env.CACHE_KV.put(`user:${api_token}`, JSON.stringify(newUserObj), { expirationTtl: 3600 }); // Cache 1hr in KV
+            await env.CACHE_KV.put(`user:${api_token.toLowerCase()}`, JSON.stringify(newUserObj), { expirationTtl: 3600 });
+          } catch (kvErr) {
+            console.error("Failed to seed KV user cache on creation:", kvErr);
+          }
         }
-        MEMORY_CACHE.users.delete(api_token);
-        MEMORY_CACHE.users.delete(api_token.toLowerCase());
+        MEMORY_CACHE.users.set(api_token, { data: newUserObj, expiresAt: now + 60000 }); // Cache 60s in memory
+        MEMORY_CACHE.users.set(api_token.toLowerCase(), { data: newUserObj, expiresAt: now + 60000 });
 
         const host = url.host || request.headers.get("host") || "your-worker.workers.dev";
         const protocol = url.protocol || "https:";
@@ -1049,15 +1068,62 @@ async function ensureDatabaseSetup(env) {
     return;
   }
   
-  // Proactively check if 'users' table exists
+  // Proactively check if 'users' table exists and has all required columns
+  let tableExists = false;
   try {
     await env.DB.prepare("SELECT 1 FROM users LIMIT 1").all();
-    // Table exists, database is already set up
-    MEMORY_CACHE.dbInitialized = true;
-    return;
+    tableExists = true;
   } catch (err) {
-    // Table doesn't exist or query failed. Let's build the tables!
-    console.log("Database tables do not exist. Bootstrapping database schema...");
+    // Table doesn't exist
+  }
+
+  if (tableExists) {
+    try {
+      // Check for missing columns and run migrations if needed
+      const { results } = await env.DB.prepare("PRAGMA table_info(users)").all();
+      const existingColumns = results.map(r => r.name.toLowerCase());
+      
+      const requiredColumns = [
+        { name: "id", type: "TEXT PRIMARY KEY" },
+        { name: "username", type: "TEXT NOT NULL UNIQUE" },
+        { name: "email", type: "TEXT NOT NULL UNIQUE" },
+        { name: "api_token", type: "TEXT NOT NULL UNIQUE" },
+        { name: "status", type: "TEXT NOT NULL DEFAULT 'enabled'" },
+        { name: "created_at", type: "INTEGER NOT NULL" },
+        { name: "expire_at", type: "INTEGER" },
+        { name: "traffic_limit_gb", type: "REAL NOT NULL DEFAULT 50.0" },
+        { name: "traffic_used", type: "REAL NOT NULL DEFAULT 0.0" },
+        { name: "request_count", type: "INTEGER NOT NULL DEFAULT 0" },
+        { name: "notes", type: "TEXT DEFAULT ''" }
+      ];
+
+      for (const col of requiredColumns) {
+        if (!existingColumns.includes(col.name.toLowerCase())) {
+          console.log(`Migrating database: Adding missing column '${col.name}' to 'users' table...`);
+          let alterSql = `ALTER TABLE users ADD COLUMN ${col.name} `;
+          if (col.name === "status") {
+            alterSql += "TEXT NOT NULL DEFAULT 'enabled'";
+          } else if (col.name === "traffic_limit_gb") {
+            alterSql += "REAL NOT NULL DEFAULT 50.0";
+          } else if (col.name === "traffic_used") {
+            alterSql += "REAL NOT NULL DEFAULT 0.0";
+          } else if (col.name === "request_count") {
+            alterSql += "INTEGER NOT NULL DEFAULT 0";
+          } else if (col.name === "notes") {
+            alterSql += "TEXT DEFAULT ''";
+          } else if (col.name === "expire_at") {
+            alterSql += "INTEGER";
+          } else {
+            alterSql += "TEXT";
+          }
+          await env.DB.prepare(alterSql).run();
+        }
+      }
+      MEMORY_CACHE.dbInitialized = true;
+      return;
+    } catch (migErr) {
+      console.error("Migration check failed, continuing with full bootstrap if needed:", migErr);
+    }
   }
 
   try {
