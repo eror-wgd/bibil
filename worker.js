@@ -586,7 +586,7 @@ async function getCachedUser(env, apiToken) {
   const cacheKey = trimmedToken.toLowerCase();
 
   // Check local memory cache
-  const cached = MEMORY_CACHE.users.get(cacheKey);
+  const cached = MEMORY_CACHE.users.get(cacheKey) || MEMORY_CACHE.users.get(trimmedToken);
   const now = Date.now();
   if (cached && now < cached.expiresAt) {
     return cached.data;
@@ -595,9 +595,11 @@ async function getCachedUser(env, apiToken) {
   // Check KV cache
   if (env.CACHE_KV) {
     try {
-      const kvUser = await env.CACHE_KV.get(`user:${cacheKey}`, { type: "json" });
+      const kvUser = await env.CACHE_KV.get(`user:${cacheKey}`, { type: "json" }) ||
+                     await env.CACHE_KV.get(`user:${trimmedToken}`, { type: "json" });
       if (kvUser) {
-        MEMORY_CACHE.users.set(cacheKey, { data: kvUser, expiresAt: now + 5000 }); // Cache local 5s
+        MEMORY_CACHE.users.set(cacheKey, { data: kvUser, expiresAt: now + 5000 });
+        MEMORY_CACHE.users.set(trimmedToken, { data: kvUser, expiresAt: now + 5000 });
         return kvUser;
       }
     } catch (e) {
@@ -605,11 +607,17 @@ async function getCachedUser(env, apiToken) {
     }
   }
 
+  // Check if D1 DB is available
+  if (!env.DB) {
+    console.error("D1 Database binding 'DB' is missing. Cannot fetch user from database.");
+    return null;
+  }
+
   // Query D1 Database
   try {
     const user = await env.DB.prepare(
-      "SELECT * FROM users WHERE api_token = ? OR api_token = ? OR LOWER(api_token) = ?"
-    ).bind(trimmedToken, cacheKey, cacheKey).first();
+      "SELECT * FROM users WHERE LOWER(api_token) = LOWER(?)"
+    ).bind(trimmedToken).first();
 
     if (user) {
       // Ensure safe defaults for all fields to handle transitional or older database schemas
@@ -618,15 +626,31 @@ async function getCachedUser(env, apiToken) {
       user.traffic_used = typeof user.traffic_used === "number" ? user.traffic_used : parseFloat(user.traffic_used || "0.0");
       user.request_count = typeof user.request_count === "number" ? user.request_count : parseInt(user.request_count || "0");
 
-      // Save to KV and local memory
+      const userToken = (user.api_token || trimmedToken).trim();
+      const userTokenLower = userToken.toLowerCase();
+
+      // Save to KV and local memory under both representations for fast future lookup
       if (env.CACHE_KV) {
-        await env.CACHE_KV.put(`user:${cacheKey}`, JSON.stringify(user), { expirationTtl: 30 }); // Cache 30s in KV
+        try {
+          const serialized = JSON.stringify(user);
+          await env.CACHE_KV.put(`user:${userTokenLower}`, serialized, { expirationTtl: 3600 }); // Cache 1hr in KV
+          if (userToken !== userTokenLower) {
+            await env.CACHE_KV.put(`user:${userToken}`, serialized, { expirationTtl: 3600 });
+          }
+        } catch (kvErr) {
+          console.error("Failed to update KV on user fetch:", kvErr);
+        }
       }
-      MEMORY_CACHE.users.set(cacheKey, { data: user, expiresAt: now + 5000 });
+      
+      MEMORY_CACHE.users.set(userTokenLower, { data: user, expiresAt: now + 60000 }); // Cache 60s in memory
+      if (userToken !== userTokenLower) {
+        MEMORY_CACHE.users.set(userToken, { data: user, expiresAt: now + 60000 });
+      }
+
       return user;
     }
   } catch (err) {
-    console.error("D1 User fetch failed:", err);
+    console.error("D1 User fetch failed in getCachedUser:", err);
   }
 
   return null;
