@@ -47,8 +47,9 @@ database_id = "your-d1-database-uuid"
 binding = "CACHE_KV"
 id = "your-kv-namespace-uuid"
 
-[build]
-upload = { format = "modules" }`;
+# Cloudflare Workers Assets Configuration (Serves the compiled React App)
+[assets]
+directory = "./dist"`;
 
 const SCHEMA_CODE = `-- Cloudflare D1 Database Schema for Cloudflare DoH Platform
 -- Tables: users, logs, statistics, settings, sessions
@@ -129,7 +130,9 @@ A production-ready Private DNS over HTTPS server running entirely inside Cloudfl
    \`wrangler d1 execute doh-dns-db --file=./schema.sql --remote\`
 4. Create KV cache:
    \`wrangler kv:namespace create CACHE_KV\`
-5. Push Worker code:
+5. Build the React admin panel:
+   \`npm run build\`
+6. Push Worker code and static assets:
    \`wrangler deploy\``;
 
 // We will fetch worker.js at runtime or just embed a clean description

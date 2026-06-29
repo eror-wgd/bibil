@@ -70,12 +70,17 @@ The default password is `admin123`. You can change it once logged into the previ
 # or you can write your own string using standard Web Crypto SHA-256 routines.
 ```
 
-### Step 5: Deploy the Worker
+### Step 5: Build and Deploy the Platform
 
-Deploy your project globally to Cloudflare's edge network:
-```bash
-wrangler deploy
-```
+1. Build the React admin dashboard to bundle static assets into `/dist`:
+   ```bash
+   npm run build
+   ```
+
+2. Deploy your project globally to Cloudflare's edge network:
+   ```bash
+   wrangler deploy
+   ```
 
 ---
 

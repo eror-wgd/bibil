@@ -52,7 +52,20 @@ export default {
         return await handleApiRequest(request, env, ctx, url, settings);
       }
 
-      // Default Admin Panel Fallback Interface
+      // 3. Fallback to serve React Admin Dashboard from static assets (SPA routing)
+      if (env.ASSETS) {
+        let assetResponse = await env.ASSETS.fetch(request);
+        
+        // If the asset doesn't exist (e.g. client-side router path like /users or /logs), serve index.html
+        if (assetResponse.status === 404) {
+          const indexRequest = new Request(new URL("/", request.url), request);
+          return await env.ASSETS.fetch(indexRequest);
+        }
+        
+        return assetResponse;
+      }
+
+      // Default Admin Panel Fallback Interface (if ASSETS binding is missing)
       return serveAdminPanelHtml(request, env, settings);
 
     } catch (err) {
