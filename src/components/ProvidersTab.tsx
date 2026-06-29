@@ -30,6 +30,16 @@ export default function ProvidersTab({
   const [isEditOpen, setIsEditOpen] = useState(false);
   const [selected, setSelected] = useState<DnsProvider | null>(null);
 
+  // Toast Notification State
+  const [toast, setToast] = useState<{ type: "success" | "error"; message: string } | null>(null);
+
+  const showToast = (type: "success" | "error", message: string) => {
+    setToast({ type, message });
+    setTimeout(() => {
+      setToast(null);
+    }, 4000);
+  };
+
   // Forms
   const [name, setName] = useState("");
   const [dohUrl, setDohUrl] = useState("");
@@ -86,41 +96,60 @@ export default function ProvidersTab({
   const handleAddSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!name || !dohUrl) return;
-    await onAddProvider({
-      name,
-      doh_url: dohUrl,
-      ipv4,
-      ipv6,
-      country,
-      description,
-      enabled,
-      priority,
-      notes,
-      icon
-    });
-    setIsAddOpen(false);
+    try {
+      await onAddProvider({
+        name,
+        doh_url: dohUrl,
+        ipv4,
+        ipv6,
+        country,
+        description,
+        enabled,
+        priority,
+        notes,
+        icon
+      });
+      showToast("success", `DNS Upstream "${name}" added successfully.`);
+      setIsAddOpen(false);
+    } catch (err: any) {
+      showToast("error", err.message || "Failed to add DNS Upstream.");
+      console.error("handleAddSubmit failed:", err);
+    }
   };
 
   const handleEditSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selected) return;
-    await onUpdateProvider(selected.id, {
-      name,
-      doh_url: dohUrl,
-      ipv4,
-      ipv6,
-      country,
-      description,
-      enabled,
-      priority,
-      notes,
-      icon
-    });
-    setIsEditOpen(false);
+    try {
+      await onUpdateProvider(selected.id, {
+        name,
+        doh_url: dohUrl,
+        ipv4,
+        ipv6,
+        country,
+        description,
+        enabled,
+        priority,
+        notes,
+        icon
+      });
+      showToast("success", `DNS Upstream "${name}" updated successfully.`);
+      setIsEditOpen(false);
+    } catch (err: any) {
+      showToast("error", err.message || "Failed to update DNS Upstream.");
+      console.error("handleEditSubmit failed:", err);
+    }
   };
 
   const toggleEnabled = async (p: DnsProvider) => {
-    await onUpdateProvider(p.id, { enabled: !p.enabled });
+    try {
+      const nextState = !p.enabled;
+      await onUpdateProvider(p.id, { enabled: nextState });
+      showToast("success", `DNS Upstream "${p.name}" ${nextState ? "enabled" : "disabled"}.`);
+    } catch (err: any) {
+      showToast("error", err.message || "Failed to toggle upstream status.");
+      console.error("toggleEnabled failed:", err);
+    }
   };
 
   // Helper flag mapper
@@ -138,6 +167,16 @@ export default function ProvidersTab({
 
   return (
     <div className="space-y-6" id="providers-tab">
+      {toast && (
+        <div className={`fixed top-4 right-4 z-50 flex items-center space-x-2 px-4 py-3 rounded-2xl border shadow-2xl animate-in slide-in-from-top-4 fade-in duration-300 ${
+          toast.type === "success" 
+            ? "bg-emerald-950/95 border-emerald-500/30 text-emerald-300" 
+            : "bg-rose-950/95 border-rose-500/30 text-rose-300"
+        }`}>
+          {toast.type === "success" ? <CheckCircle className="w-4 h-4 text-emerald-400" /> : <ShieldAlert className="w-4 h-4 text-rose-400" />}
+          <span className="text-xs font-semibold">{toast.message}</span>
+        </div>
+      )}
       {/* Header and Controls */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
@@ -146,9 +185,14 @@ export default function ProvidersTab({
         </div>
         <div className="flex items-center space-x-3 self-start sm:self-center">
           <button
-            onClick={() => {
+            onClick={async () => {
               if (confirm("Reset providers back to default list? Custom resolvers will be removed.")) {
-                onResetToDefault();
+                try {
+                  await onResetToDefault();
+                  showToast("success", "DNS Upstream providers reset to defaults successfully.");
+                } catch (err: any) {
+                  showToast("error", err.message || "Failed to reset providers.");
+                }
               }
             }}
             className="flex items-center space-x-2 px-3 py-2 bg-white/5 text-slate-300 rounded-lg text-xs font-semibold hover:bg-white/10 transition border border-white/10"
@@ -294,7 +338,14 @@ export default function ProvidersTab({
                 <div className="flex items-center space-x-2">
                   {!isDefault && p.enabled && (
                     <button
-                      onClick={() => onSetDefaultProvider(p.id)}
+                      onClick={async () => {
+                        try {
+                          await onSetDefaultProvider(p.id);
+                          showToast("success", `Set "${p.name}" as default DNS resolver.`);
+                        } catch (err: any) {
+                          showToast("error", err.message || "Failed to set default provider.");
+                        }
+                      }}
                       className="px-2.5 py-1 bg-white/5 text-slate-300 hover:text-white hover:bg-indigo-600 rounded-lg text-xs font-semibold transition border border-white/10"
                       title="Set as Default System Upstream"
                     >
@@ -309,9 +360,14 @@ export default function ProvidersTab({
                     <Edit2 className="w-3.5 h-3.5" />
                   </button>
                   <button
-                    onClick={() => {
+                    onClick={async () => {
                       if (confirm(`Are you sure you want to delete ${p.name}? This cannot be undone.`)) {
-                        onDeleteProvider(p.id);
+                        try {
+                          await onDeleteProvider(p.id);
+                          showToast("success", `DNS Upstream "${p.name}" deleted successfully.`);
+                        } catch (err: any) {
+                          showToast("error", err.message || "Failed to delete upstream.");
+                        }
                       }
                     }}
                     className="p-1.5 bg-white/5 hover:bg-rose-950 text-rose-400 hover:text-rose-300 rounded-lg transition border border-white/10"

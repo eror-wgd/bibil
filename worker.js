@@ -9,6 +9,8 @@ const MEMORY_CACHE = {
   settings: null,
   settingsExpiresAt: 0,
   users: new Map(), // api_token -> user object
+  providers: null,
+  providersExpiresAt: 0,
   dbInitialized: false, // Flag to prevent redundant checks
 };
 
@@ -322,7 +324,7 @@ async function handleDnsQuery(request, env, ctx, url, settings) {
 
   // 5. Select Upstream DNS
   const upstreamKey = settings.default_dns_provider || "cloudflare";
-  const upstreamUrlString = UPSTREAM_PROVIDERS[upstreamKey] || UPSTREAM_PROVIDERS.cloudflare;
+  const upstreamUrlString = await getProviderDohUrl(env, upstreamKey);
   const upstreamUrl = new URL(upstreamUrlString);
 
   const startTime = Date.now();
@@ -575,6 +577,37 @@ async function getCachedSettings(env) {
     console.error("D1 Settings fetch failed. Using hardcoded defaults:", err);
     return defaultSettings;
   }
+}
+
+/**
+ * Retrieve the dynamic Upstream DNS Provider DoH URL from D1 or cache
+ */
+async function getProviderDohUrl(env, key) {
+  const now = Date.now();
+  if (MEMORY_CACHE.providers && now < MEMORY_CACHE.providersExpiresAt) {
+    const prov = MEMORY_CACHE.providers.find(p => p.id === key);
+    if (prov && prov.enabled === 1) return prov.doh_url;
+  }
+
+  try {
+    const { results } = await env.DB.prepare("SELECT id, doh_url, enabled FROM providers").all();
+    MEMORY_CACHE.providers = results;
+    MEMORY_CACHE.providersExpiresAt = now + 10000; // Cache local for 10 seconds
+    const prov = results.find(p => p.id === key);
+    if (prov && prov.enabled === 1) return prov.doh_url;
+  } catch (err) {
+    console.error("D1 Providers fetch failed inside DNS resolver:", err);
+  }
+
+  // Robust fallback defaults
+  const hardcoded = {
+    cloudflare: "https://cloudflare-dns.com/dns-query",
+    google: "https://dns.google/dns-query",
+    quad9: "https://dns.quad9.net/dns-query",
+    adguard: "https://dns.adguard-dns.com/dns-query",
+    nextdns: "https://dns.nextdns.io"
+  };
+  return hardcoded[key] || hardcoded.cloudflare;
 }
 
 /**
@@ -966,6 +999,439 @@ async function handleApiRequest(request, env, ctx, url, settings) {
     });
   }
 
+  // --- DNS Providers Endpoints ---
+  if (url.pathname === "/api/providers") {
+    if (request.method === "GET") {
+      try {
+        const { results } = await env.DB.prepare("SELECT * FROM providers ORDER BY priority ASC").all();
+        const formatted = results.map(r => ({
+          ...r,
+          enabled: r.enabled === 1
+        }));
+        return jsonResponse(formatted);
+      } catch (err) {
+        console.error("GET /api/providers failed:", err);
+        return jsonResponse({ error: "Failed to fetch providers: " + err.message }, 500);
+      }
+    }
+
+    if (request.method === "POST") {
+      try {
+        const body = await request.json();
+        if (!body.name || !body.doh_url) {
+          return jsonResponse({ error: "Missing required fields: name and doh_url." }, 400);
+        }
+        const id = body.id || (body.name.toLowerCase().replace(/[^a-z0-9]/g, "_") + "_" + Math.random().toString(36).substring(2, 6));
+        const name = body.name;
+        const doh_url = body.doh_url;
+        const ipv4 = body.ipv4 || "";
+        const ipv6 = body.ipv6 || "";
+        const country = body.country || "US";
+        const description = body.description || "";
+        const enabled = body.enabled !== false ? 1 : 0;
+        const priority = parseInt(body.priority) || 10;
+        const notes = body.notes || "";
+        const icon = body.icon || "";
+
+        await env.DB.prepare(`
+          INSERT INTO providers (id, name, doh_url, ipv4, ipv6, country, description, enabled, priority, notes, icon)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).bind(id, name, doh_url, ipv4, ipv6, country, description, enabled, priority, notes, icon).run();
+
+        // Flush Cache
+        MEMORY_CACHE.providers = null;
+        MEMORY_CACHE.providersExpiresAt = 0;
+
+        return jsonResponse({ success: true, message: "DNS Provider added successfully." });
+      } catch (err) {
+        console.error("POST /api/providers failed:", err);
+        return jsonResponse({ error: "Failed to add provider: " + err.message }, 500);
+      }
+    }
+  }
+
+  if (url.pathname.startsWith("/api/providers/") && url.pathname !== "/api/providers/reset") {
+    const parts = url.pathname.split("/");
+    const providerId = parts[parts.length - 1];
+
+    if (request.method === "PUT") {
+      try {
+        const body = await request.json();
+        const existing = await env.DB.prepare("SELECT 1 FROM providers WHERE id = ?").bind(providerId).first();
+        if (!existing) {
+          return jsonResponse({ error: "DNS Provider not found" }, 404);
+        }
+
+        const name = body.name;
+        const doh_url = body.doh_url;
+        const ipv4 = body.ipv4;
+        const ipv6 = body.ipv6;
+        const country = body.country;
+        const description = body.description;
+        const enabled = body.enabled !== undefined ? (body.enabled ? 1 : 0) : undefined;
+        const priority = body.priority !== undefined ? parseInt(body.priority) : undefined;
+        const notes = body.notes;
+        const icon = body.icon;
+
+        let updateFields = [];
+        let bindValues = [];
+
+        if (name !== undefined) { updateFields.push("name = ?"); bindValues.push(name); }
+        if (doh_url !== undefined) { updateFields.push("doh_url = ?"); bindValues.push(doh_url); }
+        if (ipv4 !== undefined) { updateFields.push("ipv4 = ?"); bindValues.push(ipv4); }
+        if (ipv6 !== undefined) { updateFields.push("ipv6 = ?"); bindValues.push(ipv6); }
+        if (country !== undefined) { updateFields.push("country = ?"); bindValues.push(country); }
+        if (description !== undefined) { updateFields.push("description = ?"); bindValues.push(description); }
+        if (enabled !== undefined) { updateFields.push("enabled = ?"); bindValues.push(enabled); }
+        if (priority !== undefined) { updateFields.push("priority = ?"); bindValues.push(priority); }
+        if (notes !== undefined) { updateFields.push("notes = ?"); bindValues.push(notes); }
+        if (icon !== undefined) { updateFields.push("icon = ?"); bindValues.push(icon); }
+
+        if (updateFields.length > 0) {
+          bindValues.push(providerId);
+          await env.DB.prepare(`
+            UPDATE providers 
+            SET ${updateFields.join(", ")}
+            WHERE id = ?
+          `).bind(...bindValues).run();
+        }
+
+        // Flush Cache
+        MEMORY_CACHE.providers = null;
+        MEMORY_CACHE.providersExpiresAt = 0;
+
+        return jsonResponse({ success: true, message: "DNS Provider updated successfully." });
+      } catch (err) {
+        console.error(`PUT /api/providers/${providerId} failed:`, err);
+        return jsonResponse({ error: "Failed to update provider: " + err.message }, 500);
+      }
+    }
+
+    if (request.method === "DELETE") {
+      try {
+        await env.DB.prepare("DELETE FROM providers WHERE id = ?").bind(providerId).run();
+
+        // Flush Cache
+        MEMORY_CACHE.providers = null;
+        MEMORY_CACHE.providersExpiresAt = 0;
+
+        return jsonResponse({ success: true, message: "DNS Provider deleted successfully." });
+      } catch (err) {
+        console.error(`DELETE /api/providers/${providerId} failed:`, err);
+        return jsonResponse({ error: "Failed to delete provider: " + err.message }, 500);
+      }
+    }
+  }
+
+  if (url.pathname === "/api/providers/reset" && request.method === "POST") {
+    try {
+      await env.DB.prepare("DELETE FROM providers").run();
+
+      const defaultProviders = [
+        ["cloudflare", "Cloudflare", "https://cloudflare-dns.com/dns-query", "1.1.1.1,1.0.0.1", "2606:4700:4700::1111,2606:4700:4700::1001", "US", "Fast, privacy-first, zero-logging public DNS service.", 1, 1, "Excellent global coverage & speed", "cloudflare"],
+        ["google", "Google Public DNS", "https://dns.google/dns-query", "8.8.8.8,8.8.4.4", "2001:4860:4860::8888,2001:4860:4860::8844", "US", "Stable, resilient, global public DNS service.", 1, 2, "Reliable global infrastructure", "google"],
+        ["quad9", "Quad9", "https://dns.quad9.net/dns-query", "9.9.9.9,149.112.112.112", "2620:fe::fe,2620:fe::9", "CH", "Threat protection, phishing & malware blocking.", 1, 3, "Privacy advocate, Swiss non-profit", "shield"],
+        ["adguard", "AdGuard DNS", "https://dns.adguard-dns.com/dns-query", "94.140.14.14,94.140.15.15", "2a10:50c0::ad1:ff,2a10:50c0::ad2:ff", "CY", "Blocks advertisement, trackers, and adware.", 1, 4, "Perfect for family and device filtering", "shield-alert"],
+        ["nextdns", "NextDNS", "https://dns.nextdns.io", "45.90.28.232,45.90.30.232", "2a07:a8c0::,2a07:a8c1::", "US", "Extremely modular, analytics-rich secure cloud firewall DNS.", 1, 5, "Custom cloud profiles", "sliders"],
+        ["shecan", "Shecan", "https://free.shecan.ir/dns-query", "178.22.122.100,185.51.200.2", "", "IR", "Bypasses geo-sanctions on tech tools and services.", 1, 6, "Essential for developer sanction bypasses", "globe"],
+        ["electro", "Electro DNS", "https://dns.electro.tm/dns-query", "78.157.108.10,78.157.108.11", "", "IR", "High performance sanction-bypass & gaming public DNS.", 1, 7, "Fast gaming and docker registry routing", "zap"],
+        ["norddns", "Nord DNS", "https://doh.norddns.com/dns-query", "103.86.96.100,103.86.99.100", "", "PA", "Encrypted, no-log secure DNS by NordVPN.", 1, 8, "No censorship, safe connection", "lock"],
+        ["alidns", "AliDNS", "https://dns.alidns.com/dns-query", "223.5.5.5,223.6.6.6", "2400:3200::1,2400:3200:baba::1", "CN", "Ali public DNS offering rapid resolution across Asia.", 1, 9, "Optimized for East Asian web traffic", "network"],
+        ["zerodns", "ZeroDNS", "https://doh.zerodns.org/dns-query", "185.230.162.24,185.230.162.25", "2a06:98c0:3600::", "DE", "Zero logs, community-operated, highly secure DNS.", 1, 10, "Pure open source community", "eye-off"],
+        ["dns114", "114DNS", "https://doh.114dns.com/dns-query", "114.114.114.114,114.114.115.115", "", "CN", "Large, robust Chinese mainland public DNS.", 1, 11, "Highly distributed servers", "server"],
+        ["dyndns", "CleanBrowsing", "https://doh.cleanbrowsing.org/dns-query", "185.228.168.9,185.228.169.9", "2a0d:5600::2", "US", "CleanBrowsing safe filtering and Dyn family protection.", 1, 12, "Ideal for blocking malicious contents", "heart-handshake"],
+        ["dnswatch", "DNS.WATCH", "https://doh.dns.watch/dns-query", "84.200.69.80,84.200.70.40", "2001:1608:10:25::1c04:b12f", "DE", "Fast, un-censored public DNS that values web freedom.", 1, 13, "No logs, no censorship, fully free", "eye"],
+        ["dns4eu", "DNS4EU Unfiltered", "https://doh.dns4eu.eu/dns-query", "9.9.9.10,149.112.112.10", "2620:fe::10", "EU", "Sovereign European Union public DNS initiative.", 1, 14, "Promoted by EU commission", "landmark"]
+      ];
+
+      for (const p of defaultProviders) {
+        await env.DB.prepare(`
+          INSERT INTO providers (id, name, doh_url, ipv4, ipv6, country, description, enabled, priority, notes, icon)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).bind(p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7], p[8], p[9], p[10]).run();
+      }
+
+      // Flush Cache
+      MEMORY_CACHE.providers = null;
+      MEMORY_CACHE.providersExpiresAt = 0;
+
+      return jsonResponse({ success: true, message: "DNS Providers list reset to default successfully." });
+    } catch (err) {
+      console.error("POST /api/providers/reset failed:", err);
+      return jsonResponse({ error: "Failed to reset providers: " + err.message }, 500);
+    }
+  }
+
+  // --- Benchmark History Endpoints ---
+  if (url.pathname === "/api/benchmark/history" && request.method === "GET") {
+    try {
+      const { results } = await env.DB.prepare("SELECT * FROM benchmark_history ORDER BY time DESC LIMIT 50").all();
+      const formatted = results.map(r => ({
+        ...r,
+        results: JSON.parse(r.results)
+      }));
+      return jsonResponse(formatted);
+    } catch (err) {
+      console.error("GET /api/benchmark/history failed:", err);
+      return jsonResponse({ error: "Failed to fetch benchmark history: " + err.message }, 500);
+    }
+  }
+
+  // --- Benchmark Run Endpoint ---
+  if (url.pathname === "/api/benchmark/run" && request.method === "POST") {
+    try {
+      const testDomain = "google.com";
+      const providersRows = await env.DB.prepare("SELECT * FROM providers WHERE enabled = 1").all();
+      const enabledProviders = providersRows.results;
+
+      if (enabledProviders.length === 0) {
+        return jsonResponse({ error: "No enabled DNS providers to benchmark." }, 400);
+      }
+
+      const results = [];
+      for (const provider of enabledProviders) {
+        const times = [];
+        let successes = 0;
+        const runs = 3;
+        let minLat = 9999;
+        let maxLat = 0;
+
+        for (let r = 0; r < runs; r++) {
+          const start = Date.now();
+          try {
+            const testUrl = `${provider.doh_url}?name=${testDomain}&type=A&ct=application/dns-json`;
+            const fetchRes = await fetch(testUrl, {
+              method: "GET",
+              headers: { "Accept": "application/dns-json" },
+              signal: AbortSignal.timeout(1200)
+            });
+            if (fetchRes.ok) {
+              const lat = Date.now() - start;
+              times.push(lat);
+              if (lat < minLat) minLat = lat;
+              if (lat > maxLat) maxLat = lat;
+              successes++;
+            } else {
+              times.push(1200);
+            }
+          } catch (err) {
+            times.push(1200);
+          }
+        }
+
+        const success_rate = Math.round((successes / runs) * 100);
+        const packet_loss = Math.round(((runs - successes) / runs) * 100);
+        const latency_avg = successes > 0 ? Math.round(times.filter(t => t < 1200).reduce((a, b) => a + b, 0) / successes) : 1200;
+        const availability = successes > 0 ? 100 : 0;
+
+        results.push({
+          providerId: provider.id,
+          name: provider.name,
+          latency_avg,
+          latency_min: minLat === 9999 ? 1200 : minLat,
+          latency_max: maxLat === 0 ? 1200 : maxLat,
+          packet_loss,
+          availability,
+          success_rate,
+          is_fastest: false
+        });
+      }
+
+      let fastestIndex = -1;
+      let minAvgLat = 9999;
+      results.forEach((r, idx) => {
+        if (r.success_rate > 0 && r.latency_avg < minAvgLat) {
+          minAvgLat = r.latency_avg;
+          fastestIndex = idx;
+        }
+      });
+      if (fastestIndex !== -1) {
+        results[fastestIndex].is_fastest = true;
+      }
+
+      const benchId = "bench_" + Date.now() + "_" + Math.random().toString(36).substring(2, 8);
+      const benchTime = Date.now();
+      const resultsStr = JSON.stringify(results);
+
+      await env.DB.prepare("INSERT INTO benchmark_history (id, time, results) VALUES (?, ?, ?)")
+        .bind(benchId, benchTime, resultsStr).run();
+
+      const historyRows = await env.DB.prepare("SELECT id FROM benchmark_history ORDER BY time DESC").all();
+      if (historyRows.results.length > 50) {
+        const toDeleteIds = historyRows.results.slice(50).map(row => row.id);
+        for (const deleteId of toDeleteIds) {
+          await env.DB.prepare("DELETE FROM benchmark_history WHERE id = ?").bind(deleteId).run();
+        }
+      }
+
+      const benchmarkRecord = {
+        id: benchId,
+        time: benchTime,
+        results
+      };
+
+      return jsonResponse({ success: true, benchmark: benchmarkRecord });
+    } catch (err) {
+      console.error("Benchmark run failed:", err);
+      return jsonResponse({ error: "Failed to run benchmark: " + err.message }, 500);
+    }
+  }
+
+  // --- Backup Export Endpoint ---
+  if (url.pathname === "/api/backup/export" && request.method === "GET") {
+    try {
+      const settingsRows = await env.DB.prepare("SELECT * FROM settings").all();
+      const providersRows = await env.DB.prepare("SELECT * FROM providers").all();
+      const usersRows = await env.DB.prepare("SELECT * FROM users").all();
+
+      const settingsMap = {};
+      for (const row of settingsRows.results) {
+        settingsMap[row.key] = row.value;
+      }
+
+      const providersFormatted = providersRows.results.map(r => ({
+        ...r,
+        enabled: r.enabled === 1
+      }));
+
+      const exportData = {
+        version: "1.0.0",
+        timestamp: Date.now(),
+        settings: settingsMap,
+        providers: providersFormatted,
+        users: usersRows.results
+      };
+
+      return new Response(JSON.stringify(exportData, null, 2), {
+        headers: {
+          "Content-Type": "application/json",
+          "Content-Disposition": "attachment; filename=doh-platform-backup.json"
+        }
+      });
+    } catch (err) {
+      console.error("GET /api/backup/export failed:", err);
+      return jsonResponse({ error: "Failed to export backup: " + err.message }, 500);
+    }
+  }
+
+  // --- Backup Restore Endpoint ---
+  if (url.pathname === "/api/backup/restore" && request.method === "POST") {
+    try {
+      const { settings, providers, users } = await request.json();
+      if (!settings && !providers && !users) {
+        return jsonResponse({ error: "Invalid backup file structure." }, 400);
+      }
+
+      if (settings) {
+        for (const [key, val] of Object.entries(settings)) {
+          await env.DB.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)")
+            .bind(key, String(val)).run();
+        }
+      }
+
+      if (providers && Array.isArray(providers)) {
+        await env.DB.prepare("DELETE FROM providers").run();
+        for (const p of providers) {
+          const id = p.id;
+          const name = p.name;
+          const doh_url = p.doh_url;
+          const ipv4 = p.ipv4 || "";
+          const ipv6 = p.ipv6 || "";
+          const country = p.country || "US";
+          const description = p.description || "";
+          const enabled = p.enabled !== false ? 1 : 0;
+          const priority = parseInt(p.priority) || 10;
+          const notes = p.notes || "";
+          const icon = p.icon || "";
+
+          await env.DB.prepare(`
+            INSERT INTO providers (id, name, doh_url, ipv4, ipv6, country, description, enabled, priority, notes, icon)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `).bind(id, name, doh_url, ipv4, ipv6, country, description, enabled, priority, notes, icon).run();
+        }
+      }
+
+      if (users && Array.isArray(users)) {
+        await env.DB.prepare("DELETE FROM users").run();
+        for (const u of users) {
+          await env.DB.prepare(`
+            INSERT INTO users (id, username, email, api_token, status, created_at, expire_at, traffic_limit_gb, traffic_used, request_count, notes)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `).bind(
+            u.id, u.username, u.email, u.api_token, u.status || "enabled",
+            u.created_at || Date.now(), u.expire_at || null,
+            parseFloat(u.traffic_limit_gb || "50.0"), parseFloat(u.traffic_used || "0.0"),
+            parseInt(u.request_count || "0"), u.notes || ""
+          ).run();
+        }
+      }
+
+      // Flush Cache
+      MEMORY_CACHE.providers = null;
+      MEMORY_CACHE.providersExpiresAt = 0;
+      MEMORY_CACHE.settings = null;
+      MEMORY_CACHE.settingsExpiresAt = 0;
+
+      return jsonResponse({ success: true, message: "Database components restored successfully." });
+    } catch (err) {
+      console.error("POST /api/backup/restore failed:", err);
+      return jsonResponse({ error: "Failed to restore backup: " + err.message }, 500);
+    }
+  }
+
+  // --- Import Providers Endpoint ---
+  if (url.pathname === "/api/backup/import-providers" && request.method === "POST") {
+    try {
+      const { providers } = await request.json();
+      if (!providers || !Array.isArray(providers)) {
+        return jsonResponse({ error: "Providers list must be an array." }, 400);
+      }
+
+      let importedCount = 0;
+      for (const imported of providers) {
+        if (!imported.name || !imported.doh_url) continue;
+
+        const existing = await env.DB.prepare("SELECT id FROM providers WHERE id = ? OR doh_url = ?")
+          .bind(imported.id || "", imported.doh_url).first();
+
+        const id = imported.id || (imported.name.toLowerCase().replace(/[^a-z0-9]/g, "_") + "_" + Math.random().toString(36).substring(2, 6));
+        const name = imported.name;
+        const doh_url = imported.doh_url;
+        const ipv4 = imported.ipv4 || "";
+        const ipv6 = imported.ipv6 || "";
+        const country = imported.country || "US";
+        const description = imported.description || "";
+        const enabled = imported.enabled !== false ? 1 : 0;
+        const priority = parseInt(imported.priority) || 10;
+        const notes = imported.notes || "";
+        const icon = imported.icon || "";
+
+        if (existing) {
+          await env.DB.prepare(`
+            UPDATE providers 
+            SET name = ?, doh_url = ?, ipv4 = ?, ipv6 = ?, country = ?, description = ?, enabled = ?, priority = ?, notes = ?, icon = ?
+            WHERE id = ?
+          `).bind(name, doh_url, ipv4, ipv6, country, description, enabled, priority, notes, icon, existing.id).run();
+        } else {
+          await env.DB.prepare(`
+            INSERT INTO providers (id, name, doh_url, ipv4, ipv6, country, description, enabled, priority, notes, icon)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `).bind(id, name, doh_url, ipv4, ipv6, country, description, enabled, priority, notes, icon).run();
+        }
+        importedCount++;
+      }
+
+      // Flush Cache
+      MEMORY_CACHE.providers = null;
+      MEMORY_CACHE.providersExpiresAt = 0;
+
+      return jsonResponse({ success: true, message: `Successfully imported/merged ${importedCount} DNS Providers.` });
+    } catch (err) {
+      console.error("POST /api/backup/import-providers failed:", err);
+      return jsonResponse({ error: "Failed to import providers: " + err.message }, 500);
+    }
+  }
+
   return jsonResponse({ error: "Endpoint Not Found" }, 404);
 }
 
@@ -1097,67 +1563,9 @@ async function ensureDatabaseSetup(env) {
     console.warn("D1 Database binding 'DB' is missing. Bypassing database setup check.");
     return;
   }
-  
-  // Proactively check if 'users' table exists and has all required columns
-  let tableExists = false;
-  try {
-    await env.DB.prepare("SELECT 1 FROM users LIMIT 1").all();
-    tableExists = true;
-  } catch (err) {
-    // Table doesn't exist
-  }
-
-  if (tableExists) {
-    try {
-      // Check for missing columns and run migrations if needed
-      const { results } = await env.DB.prepare("PRAGMA table_info(users)").all();
-      const existingColumns = results.map(r => r.name.toLowerCase());
-      
-      const requiredColumns = [
-        { name: "id", type: "TEXT PRIMARY KEY" },
-        { name: "username", type: "TEXT NOT NULL UNIQUE" },
-        { name: "email", type: "TEXT NOT NULL UNIQUE" },
-        { name: "api_token", type: "TEXT NOT NULL UNIQUE" },
-        { name: "status", type: "TEXT NOT NULL DEFAULT 'enabled'" },
-        { name: "created_at", type: "INTEGER NOT NULL" },
-        { name: "expire_at", type: "INTEGER" },
-        { name: "traffic_limit_gb", type: "REAL NOT NULL DEFAULT 50.0" },
-        { name: "traffic_used", type: "REAL NOT NULL DEFAULT 0.0" },
-        { name: "request_count", type: "INTEGER NOT NULL DEFAULT 0" },
-        { name: "notes", type: "TEXT DEFAULT ''" }
-      ];
-
-      for (const col of requiredColumns) {
-        if (!existingColumns.includes(col.name.toLowerCase())) {
-          console.log(`Migrating database: Adding missing column '${col.name}' to 'users' table...`);
-          let alterSql = `ALTER TABLE users ADD COLUMN ${col.name} `;
-          if (col.name === "status") {
-            alterSql += "TEXT NOT NULL DEFAULT 'enabled'";
-          } else if (col.name === "traffic_limit_gb") {
-            alterSql += "REAL NOT NULL DEFAULT 50.0";
-          } else if (col.name === "traffic_used") {
-            alterSql += "REAL NOT NULL DEFAULT 0.0";
-          } else if (col.name === "request_count") {
-            alterSql += "INTEGER NOT NULL DEFAULT 0";
-          } else if (col.name === "notes") {
-            alterSql += "TEXT DEFAULT ''";
-          } else if (col.name === "expire_at") {
-            alterSql += "INTEGER";
-          } else {
-            alterSql += "TEXT";
-          }
-          await env.DB.prepare(alterSql).run();
-        }
-      }
-      MEMORY_CACHE.dbInitialized = true;
-      return;
-    } catch (migErr) {
-      console.error("Migration check failed, continuing with full bootstrap if needed:", migErr);
-    }
-  }
 
   try {
-    // 1. Create tables
+    // 1. Create tables if they do not exist
     await env.DB.prepare(`
       CREATE TABLE IF NOT EXISTS users (
         id TEXT PRIMARY KEY,
@@ -1217,17 +1625,85 @@ async function ensureDatabaseSetup(env) {
       )
     `).run();
 
-    // Create Indexes
+    await env.DB.prepare(`
+      CREATE TABLE IF NOT EXISTS providers (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        doh_url TEXT NOT NULL,
+        ipv4 TEXT DEFAULT '',
+        ipv6 TEXT DEFAULT '',
+        country TEXT DEFAULT 'US',
+        description TEXT DEFAULT '',
+        enabled INTEGER NOT NULL DEFAULT 1,
+        priority INTEGER NOT NULL DEFAULT 10,
+        notes TEXT DEFAULT '',
+        icon TEXT DEFAULT ''
+      )
+    `).run();
+
+    await env.DB.prepare(`
+      CREATE TABLE IF NOT EXISTS benchmark_history (
+        id TEXT PRIMARY KEY,
+        time INTEGER NOT NULL,
+        results TEXT NOT NULL
+      )
+    `).run();
+
+    // 2. Ensure users table has all required columns (migration helper)
+    try {
+      const { results } = await env.DB.prepare("PRAGMA table_info(users)").all();
+      const existingColumns = results.map(r => r.name.toLowerCase());
+      
+      const requiredColumns = [
+        { name: "id", type: "TEXT PRIMARY KEY" },
+        { name: "username", type: "TEXT NOT NULL UNIQUE" },
+        { name: "email", type: "TEXT NOT NULL UNIQUE" },
+        { name: "api_token", type: "TEXT NOT NULL UNIQUE" },
+        { name: "status", type: "TEXT NOT NULL DEFAULT 'enabled'" },
+        { name: "created_at", type: "INTEGER NOT NULL" },
+        { name: "expire_at", type: "INTEGER" },
+        { name: "traffic_limit_gb", type: "REAL NOT NULL DEFAULT 50.0" },
+        { name: "traffic_used", type: "REAL NOT NULL DEFAULT 0.0" },
+        { name: "request_count", type: "INTEGER NOT NULL DEFAULT 0" },
+        { name: "notes", type: "TEXT DEFAULT ''" }
+      ];
+
+      for (const col of requiredColumns) {
+        if (!existingColumns.includes(col.name.toLowerCase())) {
+          console.log(`Migrating database: Adding missing column '${col.name}' to 'users' table...`);
+          let alterSql = `ALTER TABLE users ADD COLUMN ${col.name} `;
+          if (col.name === "status") {
+            alterSql += "TEXT NOT NULL DEFAULT 'enabled'";
+          } else if (col.name === "traffic_limit_gb") {
+            alterSql += "REAL NOT NULL DEFAULT 50.0";
+          } else if (col.name === "traffic_used") {
+            alterSql += "REAL NOT NULL DEFAULT 0.0";
+          } else if (col.name === "request_count") {
+            alterSql += "INTEGER NOT NULL DEFAULT 0";
+          } else if (col.name === "notes") {
+            alterSql += "TEXT DEFAULT ''";
+          } else if (col.name === "expire_at") {
+            alterSql += "INTEGER";
+          } else {
+            alterSql += "TEXT";
+          }
+          await env.DB.prepare(alterSql).run();
+        }
+      }
+    } catch (migErr) {
+      console.error("Migration check failed:", migErr);
+    }
+
+    // 3. Create Indexes
     await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_users_api_token ON users(api_token)").run();
     await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_logs_time ON logs(time DESC)").run();
     await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_logs_username ON logs(username)").run();
     await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_logs_domain ON logs(domain)").run();
     await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_statistics_date ON statistics(date_str)").run();
+    await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_providers_priority ON providers(priority)").run();
 
-    // Calculate correct password hash for 'admin123' at bootstrap time
+    // 4. Seeding Default Settings
     const defaultHash = await hashPassword("admin123");
-
-    // Insert Default Settings
     const defaultSettings = [
       ['default_dns_provider', 'cloudflare'],
       ['rate_limit_per_minute', '300'],
@@ -1244,7 +1720,32 @@ async function ensureDatabaseSetup(env) {
         .bind(key, val).run();
     }
 
-    // Insert a default active user 'admin_device' with a secure randomized token for instant testing
+    // 5. Seeding Default Providers
+    const defaultProviders = [
+      ["cloudflare", "Cloudflare", "https://cloudflare-dns.com/dns-query", "1.1.1.1,1.0.0.1", "2606:4700:4700::1111,2606:4700:4700::1001", "US", "Fast, privacy-first, zero-logging public DNS service.", 1, 1, "Excellent global coverage & speed", "cloudflare"],
+      ["google", "Google Public DNS", "https://dns.google/dns-query", "8.8.8.8,8.8.4.4", "2001:4860:4860::8888,2001:4860:4860::8844", "US", "Stable, resilient, global public DNS service.", 1, 2, "Reliable global infrastructure", "google"],
+      ["quad9", "Quad9", "https://dns.quad9.net/dns-query", "9.9.9.9,149.112.112.112", "2620:fe::fe,2620:fe::9", "CH", "Threat protection, phishing & malware blocking.", 1, 3, "Privacy advocate, Swiss non-profit", "shield"],
+      ["adguard", "AdGuard DNS", "https://dns.adguard-dns.com/dns-query", "94.140.14.14,94.140.15.15", "2a10:50c0::ad1:ff,2a10:50c0::ad2:ff", "CY", "Blocks advertisement, trackers, and adware.", 1, 4, "Perfect for family and device filtering", "shield-alert"],
+      ["nextdns", "NextDNS", "https://dns.nextdns.io", "45.90.28.232,45.90.30.232", "2a07:a8c0::,2a07:a8c1::", "US", "Extremely modular, analytics-rich secure cloud firewall DNS.", 1, 5, "Custom cloud profiles", "sliders"],
+      ["shecan", "Shecan", "https://free.shecan.ir/dns-query", "178.22.122.100,185.51.200.2", "", "IR", "Bypasses geo-sanctions on tech tools and services.", 1, 6, "Essential for developer sanction bypasses", "globe"],
+      ["electro", "Electro DNS", "https://dns.electro.tm/dns-query", "78.157.108.10,78.157.108.11", "", "IR", "High performance sanction-bypass & gaming public DNS.", 1, 7, "Fast gaming and docker registry routing", "zap"],
+      ["norddns", "Nord DNS", "https://doh.norddns.com/dns-query", "103.86.96.100,103.86.99.100", "", "PA", "Encrypted, no-log secure DNS by NordVPN.", 1, 8, "No censorship, safe connection", "lock"],
+      ["alidns", "AliDNS", "https://dns.alidns.com/dns-query", "223.5.5.5,223.6.6.6", "2400:3200::1,2400:3200:baba::1", "CN", "Ali public DNS offering rapid resolution across Asia.", 1, 9, "Optimized for East Asian web traffic", "network"],
+      ["zerodns", "ZeroDNS", "https://doh.zerodns.org/dns-query", "185.230.162.24,185.230.162.25", "2a06:98c0:3600::", "DE", "Zero logs, community-operated, highly secure DNS.", 1, 10, "Pure open source community", "eye-off"],
+      ["dns114", "114DNS", "https://doh.114dns.com/dns-query", "114.114.114.114,114.114.115.115", "", "CN", "Large, robust Chinese mainland public DNS.", 1, 11, "Highly distributed servers", "server"],
+      ["dyndns", "CleanBrowsing", "https://doh.cleanbrowsing.org/dns-query", "185.228.168.9,185.228.169.9", "2a0d:5600::2", "US", "CleanBrowsing safe filtering and Dyn family protection.", 1, 12, "Ideal for blocking malicious contents", "heart-handshake"],
+      ["dnswatch", "DNS.WATCH", "https://doh.dns.watch/dns-query", "84.200.69.80,84.200.70.40", "2001:1608:10:25::1c04:b12f", "DE", "Fast, un-censored public DNS that values web freedom.", 1, 13, "No logs, no censorship, fully free", "eye"],
+      ["dns4eu", "DNS4EU Unfiltered", "https://doh.dns4eu.eu/dns-query", "9.9.9.10,149.112.112.10", "2620:fe::10", "EU", "Sovereign European Union public DNS initiative.", 1, 14, "Promoted by EU commission", "landmark"]
+    ];
+
+    for (const p of defaultProviders) {
+      await env.DB.prepare(`
+        INSERT OR IGNORE INTO providers (id, name, doh_url, ipv4, ipv6, country, description, enabled, priority, notes, icon)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).bind(p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7], p[8], p[9], p[10]).run();
+    }
+
+    // 6. Seeding Default User
     const defaultUserToken = "doh_" + Array.from(crypto.getRandomValues(new Uint8Array(20)))
       .map(b => b.toString(16).padStart(2, "0")).join("");
     await env.DB.prepare(`

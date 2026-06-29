@@ -395,50 +395,133 @@ export default function App() {
 
   // Provider Action Handlers
   const handleAddProvider = async (provider: Partial<DnsProvider>) => {
-    const res = await apiFetch("/api/providers", {
-      method: "POST",
-      body: JSON.stringify(provider)
-    });
-    if (res && res.success) {
+    if (!token) return;
+    try {
+      const response = await fetch("/api/providers", {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${token}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify(provider)
+      });
+      if (response.status === 401) {
+        handleLogout();
+        throw new Error("Session expired.");
+      }
+      const data = await response.json();
+      if (!response.ok || !data.success) {
+        throw new Error(data.error || "Failed to add provider.");
+      }
       await fetchProviders();
+      return data;
+    } catch (err: any) {
+      console.error("handleAddProvider failed:", err.message);
+      throw err;
     }
   };
 
   const handleUpdateProvider = async (id: string, provider: Partial<DnsProvider>) => {
-    const res = await apiFetch(`/api/providers/${id}`, {
-      method: "PUT",
-      body: JSON.stringify(provider)
-    });
-    if (res && res.success) {
+    if (!token) return;
+    try {
+      const response = await fetch(`/api/providers/${id}`, {
+        method: "PUT",
+        headers: {
+          "Authorization": `Bearer ${token}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify(provider)
+      });
+      if (response.status === 401) {
+        handleLogout();
+        throw new Error("Session expired.");
+      }
+      const data = await response.json();
+      if (!response.ok || !data.success) {
+        throw new Error(data.error || "Failed to update provider.");
+      }
       await fetchProviders();
+      return data;
+    } catch (err: any) {
+      console.error("handleUpdateProvider failed:", err.message);
+      throw err;
     }
   };
 
   const handleDeleteProvider = async (id: string) => {
-    const res = await apiFetch(`/api/providers/${id}`, {
-      method: "DELETE"
-    });
-    if (res && res.success) {
+    if (!token) return;
+    try {
+      const response = await fetch(`/api/providers/${id}`, {
+        method: "DELETE",
+        headers: {
+          "Authorization": `Bearer ${token}`
+        }
+      });
+      if (response.status === 401) {
+        handleLogout();
+        throw new Error("Session expired.");
+      }
+      const data = await response.json();
+      if (!response.ok || !data.success) {
+        throw new Error(data.error || "Failed to delete provider.");
+      }
       await fetchProviders();
+      return data;
+    } catch (err: any) {
+      console.error("handleDeleteProvider failed:", err.message);
+      throw err;
     }
   };
 
   const handleSetDefaultProvider = async (id: string) => {
-    const res = await apiFetch("/api/settings", {
-      method: "POST",
-      body: JSON.stringify({ default_dns_provider: id })
-    });
-    if (res && res.success) {
+    if (!token) return;
+    try {
+      const response = await fetch("/api/settings", {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${token}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({ default_dns_provider: id })
+      });
+      if (response.status === 401) {
+        handleLogout();
+        throw new Error("Session expired.");
+      }
+      const data = await response.json();
+      if (!response.ok || !data.success) {
+        throw new Error(data.error || "Failed to set default provider.");
+      }
       await fetchSettings();
+      return data;
+    } catch (err: any) {
+      console.error("handleSetDefaultProvider failed:", err.message);
+      throw err;
     }
   };
 
   const handleResetProviders = async () => {
-    const res = await apiFetch("/api/providers/reset", {
-      method: "POST"
-    });
-    if (res && res.success) {
+    if (!token) return;
+    try {
+      const response = await fetch("/api/providers/reset", {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${token}`
+        }
+      });
+      if (response.status === 401) {
+        handleLogout();
+        throw new Error("Session expired.");
+      }
+      const data = await response.json();
+      if (!response.ok || !data.success) {
+        throw new Error(data.error || "Failed to reset providers.");
+      }
       await fetchProviders();
+      return data;
+    } catch (err: any) {
+      console.error("handleResetProviders failed:", err.message);
+      throw err;
     }
   };
 
