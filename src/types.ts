@@ -12,6 +12,46 @@ export interface User {
   traffic_used: number; // in GB
   request_count: number;
   notes: string;
+  request_limit?: number; // 0 or null for unlimited
+  personal_dns_provider?: string; // id of custom/upstream provider
+  ipv6_preference?: "default" | "prefer_ipv4" | "prefer_ipv6" | "ipv4_only" | "ipv6_only";
+}
+
+export interface DnsProvider {
+  id: string;
+  name: string;
+  doh_url: string;
+  ipv4: string;
+  ipv6: string;
+  country: string;
+  description: string;
+  enabled: boolean;
+  priority: number;
+  notes?: string;
+  icon?: string;
+  // Live health fields
+  status?: "online" | "offline" | "unchecked";
+  latency?: number;
+  packetLoss?: number;
+  successRate?: number;
+  availability?: number;
+  lastCheck?: number;
+}
+
+export interface BenchmarkHistory {
+  id: string;
+  time: number;
+  results: {
+    providerId: string;
+    name: string;
+    latency_avg: number;
+    latency_min: number;
+    latency_max: number;
+    packet_loss: number;
+    availability: number;
+    success_rate: number;
+    is_fastest: boolean;
+  }[];
 }
 
 export interface Log {
@@ -55,4 +95,13 @@ export interface PlatformSettings {
   maintenance_mode: string;
   site_title: string;
   logo_url?: string;
+  dns_port?: string;
+  doh_path?: string;
+  dnssec?: string;
+  http2?: string;
+  http3?: string;
+  tls13?: string;
+  rate_limit?: string;
+  edns_client_subnet?: string;
+  ip_mode?: string;
 }

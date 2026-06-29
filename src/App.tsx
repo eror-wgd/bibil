@@ -17,16 +17,20 @@ import {
   ExternalLink,
   ChevronRight,
   User as UserIcon,
-  HardDrive
+  HardDrive,
+  Globe,
+  Zap
 } from "lucide-react";
 
-import { User, Log, DashboardSummary, StatisticsData, PlatformSettings } from "./types";
+import { User, Log, DashboardSummary, StatisticsData, PlatformSettings, DnsProvider, BenchmarkHistory } from "./types";
 import DashboardTab from "./components/DashboardTab";
 import UsersTab from "./components/UsersTab";
 import LogsTab from "./components/LogsTab";
 import StatsTab from "./components/StatsTab";
 import SettingsTab from "./components/SettingsTab";
 import DeployTab from "./components/DeployTab";
+import ProvidersTab from "./components/ProvidersTab";
+import BenchmarkTab from "./components/BenchmarkTab";
 
 // Hardcoded copy strings for Deploy Tab
 const WRANGLER_CODE = `# Wrangler configuration for Cloudflare DoH Platform
@@ -154,10 +158,12 @@ export default function App() {
   const [isLoggingIn, setIsLoggingIn] = useState<boolean>(false);
 
   // Active Navigation Tab
-  const [activeTab, setActiveTab] = useState<"dashboard" | "users" | "logs" | "stats" | "settings" | "deploy">("dashboard");
+  const [activeTab, setActiveTab] = useState<"dashboard" | "users" | "providers" | "benchmark" | "logs" | "stats" | "settings" | "deploy">("dashboard");
 
   // Domain Data State
   const [users, setUsers] = useState<User[]>([]);
+  const [providers, setProviders] = useState<DnsProvider[]>([]);
+  const [benchmarkHistory, setBenchmarkHistory] = useState<BenchmarkHistory[]>([]);
   const [logs, setLogs] = useState<Log[]>([]);
   const [dashboardSummary, setDashboardSummary] = useState<DashboardSummary>({
     total_users: 0,
@@ -236,6 +242,8 @@ export default function App() {
       await Promise.all([
         fetchDashboardSummary(),
         fetchUsers(),
+        fetchProviders(),
+        fetchBenchmarkHistory(),
         fetchLogs(false),
         fetchStatistics(),
         fetchSettings()
@@ -255,6 +263,16 @@ export default function App() {
   const fetchUsers = async () => {
     const res = await apiFetch("/api/users");
     if (res) setUsers(res);
+  };
+
+  const fetchProviders = async () => {
+    const res = await apiFetch("/api/providers");
+    if (res) setProviders(res);
+  };
+
+  const fetchBenchmarkHistory = async () => {
+    const res = await apiFetch("/api/benchmark/history");
+    if (res) setBenchmarkHistory(res);
   };
 
   const fetchLogs = async (silent = false) => {
@@ -343,11 +361,10 @@ export default function App() {
   };
 
   // User Actions handlers
-  const handleCreateUser = async (u: string, email: string, limit: number, exp: string | null, n: string) => {
-    const body = { username: u, email, traffic_limit_gb: limit, expire_at: exp, notes: n };
+  const handleCreateUser = async (data: any) => {
     const res = await apiFetch("/api/users", {
       method: "POST",
-      body: JSON.stringify(body)
+      body: JSON.stringify(data)
     });
     if (res && res.success) {
       await fetchUsers();
@@ -374,6 +391,67 @@ export default function App() {
       await fetchUsers();
       await fetchDashboardSummary();
     }
+  };
+
+  // Provider Action Handlers
+  const handleAddProvider = async (provider: Partial<DnsProvider>) => {
+    const res = await apiFetch("/api/providers", {
+      method: "POST",
+      body: JSON.stringify(provider)
+    });
+    if (res && res.success) {
+      await fetchProviders();
+    }
+  };
+
+  const handleUpdateProvider = async (id: string, provider: Partial<DnsProvider>) => {
+    const res = await apiFetch(`/api/providers/${id}`, {
+      method: "PUT",
+      body: JSON.stringify(provider)
+    });
+    if (res && res.success) {
+      await fetchProviders();
+    }
+  };
+
+  const handleDeleteProvider = async (id: string) => {
+    const res = await apiFetch(`/api/providers/${id}`, {
+      method: "DELETE"
+    });
+    if (res && res.success) {
+      await fetchProviders();
+    }
+  };
+
+  const handleSetDefaultProvider = async (id: string) => {
+    const res = await apiFetch("/api/settings", {
+      method: "POST",
+      body: JSON.stringify({ default_dns_provider: id })
+    });
+    if (res && res.success) {
+      await fetchSettings();
+    }
+  };
+
+  const handleResetProviders = async () => {
+    const res = await apiFetch("/api/providers/reset", {
+      method: "POST"
+    });
+    if (res && res.success) {
+      await fetchProviders();
+    }
+  };
+
+  // Benchmark Handler
+  const handleRunBenchmark = async () => {
+    setIsLoading(true);
+    const res = await apiFetch("/api/benchmark/run", {
+      method: "POST"
+    });
+    if (res && res.success) {
+      await fetchBenchmarkHistory();
+    }
+    setIsLoading(false);
   };
 
   const handleSaveSettings = async (data: Partial<PlatformSettings> & { admin_password?: string }) => {
@@ -509,6 +587,8 @@ export default function App() {
               {[
                 { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
                 { id: "users", label: "Client Users", icon: Users },
+                { id: "providers", label: "DNS Providers", icon: Globe },
+                { id: "benchmark", label: "DNS Benchmark", icon: Zap },
                 { id: "logs", label: "DNS query logs", icon: FileText },
                 { id: "stats", label: "Query Statistics", icon: BarChart3 },
                 { id: "settings", label: "System settings", icon: SettingsIcon },
@@ -600,6 +680,8 @@ export default function App() {
             {[
               { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
               { id: "users", label: "Clients", icon: Users },
+              { id: "providers", label: "Providers", icon: Globe },
+              { id: "benchmark", label: "Benchmark", icon: Zap },
               { id: "logs", label: "Logs", icon: FileText },
               { id: "stats", label: "Stats", icon: BarChart3 },
               { id: "settings", label: "Settings", icon: SettingsIcon },
@@ -638,45 +720,68 @@ export default function App() {
                 />
               )}
 
-              {activeTab === "users" && (
-                <UsersTab
-                  users={users}
-                  onCreateUser={handleCreateUser}
-                  onUpdateUser={handleUpdateUser}
-                  onDeleteUser={handleDeleteUser}
-                />
-              )}
-
-              {activeTab === "logs" && (
-                <LogsTab
-                  logs={logs}
-                  usernames={uniqueUsernames}
-                  countries={uniqueCountries}
-                  queryTypes={uniqueTypes}
-                  onRefresh={() => fetchLogs(false)}
-                  isLoading={isLoading}
-                  liveStreamActive={liveStreamActive}
-                  onToggleLiveStream={() => setLiveStreamActive(!liveStreamActive)}
-                  onFilterChange={(f) => {
-                    setLogsFilters(f);
-                  }}
-                />
-              )}
-
-              {activeTab === "stats" && (
-                <StatsTab
-                  stats={statistics}
-                  onRefresh={fetchStatistics}
-                  isLoading={isLoading}
-                />
-              )}
-
-              {activeTab === "settings" && (
-                <SettingsTab
-                  settings={settings}
-                  onSaveSettings={handleSaveSettings}
-                />
-              )}
+               {activeTab === "users" && (
+                 <UsersTab
+                   users={users}
+                   providers={providers}
+                   onCreateUser={handleCreateUser}
+                   onUpdateUser={handleUpdateUser}
+                   onDeleteUser={handleDeleteUser}
+                 />
+               )}
+ 
+               {activeTab === "providers" && (
+                 <ProvidersTab
+                   providers={providers}
+                   defaultProviderId={settings.default_dns_provider}
+                   onAddProvider={handleAddProvider}
+                   onUpdateProvider={handleUpdateProvider}
+                   onDeleteProvider={handleDeleteProvider}
+                   onSetDefaultProvider={handleSetDefaultProvider}
+                   onResetToDefault={handleResetProviders}
+                 />
+               )}
+ 
+               {activeTab === "benchmark" && (
+                 <BenchmarkTab
+                   history={benchmarkHistory}
+                   providers={providers}
+                   onRunBenchmark={handleRunBenchmark}
+                   isLoading={isLoading}
+                 />
+               )}
+ 
+               {activeTab === "logs" && (
+                 <LogsTab
+                   logs={logs}
+                   usernames={uniqueUsernames}
+                   countries={uniqueCountries}
+                   queryTypes={uniqueTypes}
+                   onRefresh={() => fetchLogs(false)}
+                   isLoading={isLoading}
+                   liveStreamActive={liveStreamActive}
+                   onToggleLiveStream={() => setLiveStreamActive(!liveStreamActive)}
+                   onFilterChange={(f) => {
+                     setLogsFilters(f);
+                   }}
+                 />
+               )}
+ 
+               {activeTab === "stats" && (
+                 <StatsTab
+                   stats={statistics}
+                   onRefresh={fetchStatistics}
+                   isLoading={isLoading}
+                 />
+               )}
+ 
+               {activeTab === "settings" && (
+                 <SettingsTab
+                   settings={settings}
+                   onSaveSettings={handleSaveSettings}
+                   token={token}
+                 />
+               )}
 
               {activeTab === "deploy" && (
                 <DeployTab

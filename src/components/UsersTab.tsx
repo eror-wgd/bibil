@@ -1,16 +1,18 @@
 import React, { useState } from "react";
-import { Shield, Key, CheckCircle, XCircle, Trash2, Edit2, Plus, Calendar, AlertTriangle, FileText, Mail, Info, Copy, Check } from "lucide-react";
-import { User } from "../types";
+import { Shield, Key, CheckCircle, XCircle, Trash2, Edit2, Plus, Calendar, AlertTriangle, FileText, Mail, Info, Copy, Check, Globe, HelpCircle } from "lucide-react";
+import { User, DnsProvider } from "../types";
 
 interface UsersTabProps {
   users: User[];
-  onCreateUser: (username: string, email: string, traffic_limit_gb: number, expire_at: string | null, notes: string) => Promise<void>;
+  providers: DnsProvider[];
+  onCreateUser: (data: any) => Promise<void>;
   onUpdateUser: (userId: string, data: Partial<User>) => Promise<void>;
   onDeleteUser: (userId: string) => Promise<void>;
 }
 
 export default function UsersTab({
   users,
+  providers,
   onCreateUser,
   onUpdateUser,
   onDeleteUser
@@ -29,6 +31,9 @@ export default function UsersTab({
   const [trafficLimit, setTrafficLimit] = useState(50);
   const [expireAt, setExpireAt] = useState("");
   const [notes, setNotes] = useState("");
+  const [requestLimit, setRequestLimit] = useState(0);
+  const [personalDnsProvider, setPersonalDnsProvider] = useState("");
+  const [ipv6Preference, setIpv6Preference] = useState("default");
 
   const [copiedToken, setCopiedToken] = useState<string | null>(null);
   const [copiedDoH, setCopiedDoH] = useState<string | null>(null);
@@ -60,13 +65,25 @@ export default function UsersTab({
     setTrafficLimit(50);
     setExpireAt("");
     setNotes("");
+    setRequestLimit(0);
+    setPersonalDnsProvider("");
+    setIpv6Preference("default");
     setIsAddModalOpen(true);
   };
 
   const handleAddSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!username || !email) return;
-    await onCreateUser(username, email, trafficLimit, expireAt || null, notes);
+    await onCreateUser({
+      username,
+      email,
+      traffic_limit_gb: trafficLimit,
+      expire_at: expireAt || null,
+      notes,
+      request_limit: requestLimit,
+      personal_dns_provider: personalDnsProvider,
+      ipv6_preference: ipv6Preference
+    });
     setIsAddModalOpen(false);
   };
 
@@ -76,6 +93,9 @@ export default function UsersTab({
     setTrafficLimit(user.traffic_limit_gb);
     setExpireAt(user.expire_at ? new Date(user.expire_at).toISOString().split("T")[0] : "");
     setNotes(user.notes || "");
+    setRequestLimit(user.request_limit || 0);
+    setPersonalDnsProvider(user.personal_dns_provider || "");
+    setIpv6Preference(user.ipv6_preference || "default");
     setIsEditModalOpen(true);
   };
 
@@ -86,7 +106,10 @@ export default function UsersTab({
       email,
       traffic_limit_gb: trafficLimit,
       expire_at: expireAt ? new Date(expireAt).getTime() : null,
-      notes
+      notes,
+      request_limit: requestLimit,
+      personal_dns_provider: personalDnsProvider,
+      ipv6_preference: ipv6Preference
     });
     setIsEditModalOpen(false);
   };
@@ -146,7 +169,7 @@ export default function UsersTab({
                 <th className="py-4 px-6">User Profile</th>
                 <th className="py-4 px-6">Connection & Token</th>
                 <th className="py-4 px-6">Status</th>
-                <th className="py-4 px-6">Traffic Used / Limit</th>
+                <th className="py-4 px-6">Traffic & Requests</th>
                 <th className="py-4 px-6">Expiration</th>
                 <th className="py-4 px-6 text-center">Actions</th>
               </tr>
@@ -156,6 +179,10 @@ export default function UsersTab({
                 const isExpired = user.expire_at ? Date.now() > user.expire_at : false;
                 const trafficPercentage = Math.min((user.traffic_used / user.traffic_limit_gb) * 100, 100);
                 const isLimitExceeded = user.traffic_used >= user.traffic_limit_gb;
+                const isRequestExceeded = user.request_limit && user.request_limit > 0 && user.request_count >= user.request_limit;
+
+                // Find custom DNS provider display name
+                const customProvider = providers.find(p => p.id === user.personal_dns_provider);
 
                 return (
                   <tr key={user.id} className="hover:bg-white/5 transition duration-150">
@@ -176,6 +203,24 @@ export default function UsersTab({
                         <div className="text-xs text-slate-400 font-mono flex items-center mt-0.5 space-x-1">
                           <Mail className="w-3 h-3 text-slate-500" />
                           <span>{user.email}</span>
+                        </div>
+                        {/* Custom indicators */}
+                        <div className="flex flex-wrap gap-1 mt-1.5">
+                          {user.personal_dns_provider ? (
+                            <span className="text-[9px] bg-indigo-950/60 text-indigo-400 border border-indigo-900/40 px-1.5 py-0.5 rounded-md font-semibold flex items-center space-x-1">
+                              <Globe className="w-2.5 h-2.5" />
+                              <span>DNS: {customProvider ? customProvider.name : user.personal_dns_provider}</span>
+                            </span>
+                          ) : (
+                            <span className="text-[9px] bg-white/5 text-slate-500 border border-white/5 px-1.5 py-0.5 rounded-md font-semibold">
+                              DNS: Default Upstream
+                            </span>
+                          )}
+                          {user.ipv6_preference && user.ipv6_preference !== "default" && (
+                            <span className="text-[9px] bg-purple-950/60 text-purple-400 border border-purple-900/40 px-1.5 py-0.5 rounded-md font-semibold">
+                              IPv6: {user.ipv6_preference.replace("_", " ")}
+                            </span>
+                          )}
                         </div>
                       </div>
                     </td>
@@ -248,9 +293,9 @@ export default function UsersTab({
                       </button>
                     </td>
 
-                    {/* Traffic used progress */}
+                    {/* Traffic & Requests used progress */}
                     <td className="py-4 px-6">
-                      <div className="w-full max-w-[160px] space-y-1">
+                      <div className="w-full max-w-[170px] space-y-1">
                         <div className="flex justify-between text-xs font-mono">
                           <span className={`${isLimitExceeded ? "text-rose-400 font-semibold" : "text-slate-300"}`}>
                             {user.traffic_used.toFixed(2)}
@@ -269,10 +314,29 @@ export default function UsersTab({
                             style={{ width: `${trafficPercentage}%` }}
                           />
                         </div>
+
+                        {/* Request Counts & Limits */}
+                        <div className="text-[10px] text-slate-400 font-mono flex items-center justify-between mt-1">
+                          <span>Reqs: {user.request_count}</span>
+                          {user.request_limit && user.request_limit > 0 ? (
+                            <span className={isRequestExceeded ? "text-rose-400 font-bold" : "text-slate-500"}>
+                              / {user.request_limit}
+                            </span>
+                          ) : (
+                            <span className="text-slate-600">/ ∞</span>
+                          )}
+                        </div>
+
                         {isLimitExceeded && (
                           <div className="flex items-center text-[10px] text-rose-400 font-semibold mt-0.5 space-x-1 animate-pulse">
                             <AlertTriangle className="w-3 h-3" />
                             <span>Limit Exceeded</span>
+                          </div>
+                        )}
+                        {isRequestExceeded && (
+                          <div className="flex items-center text-[10px] text-rose-400 font-semibold mt-0.5 space-x-1 animate-pulse">
+                            <AlertTriangle className="w-3 h-3" />
+                            <span>Rate Limit Reached</span>
                           </div>
                         )}
                       </div>
@@ -338,7 +402,7 @@ export default function UsersTab({
       {/* MODAL 1: CREATE USER DIALOG */}
       {isAddModalOpen && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-md flex items-center justify-center p-4 z-50">
-          <div className="bg-[#030712]/90 backdrop-blur-xl border border-white/10 rounded-3xl w-full max-w-md overflow-hidden shadow-2xl animate-in fade-in duration-200">
+          <div className="bg-[#030712]/90 backdrop-blur-xl border border-white/10 rounded-3xl w-full max-w-lg overflow-hidden shadow-2xl animate-in fade-in duration-200">
             <div className="p-6 border-b border-white/10 bg-white/5 flex justify-between items-center">
               <h5 className="text-lg font-bold text-white flex items-center space-x-2">
                 <Plus className="w-5 h-5 text-indigo-400" />
@@ -352,30 +416,32 @@ export default function UsersTab({
               </button>
             </div>
             
-            <form onSubmit={handleAddSubmit} className="p-6 space-y-4">
-              <div>
-                <label className="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1.5">Client Identifier / Name</label>
-                <input
-                  type="text"
-                  required
-                  placeholder="e.g. janes_laptop"
-                  value={username}
-                  onChange={(e) => setUsername(e.target.value.replace(/[^a-zA-Z0-9_-]/g, ""))}
-                  className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-indigo-500"
-                />
-                <span className="text-[10px] text-slate-500 mt-1 block">Only letters, numbers, hyphens, and underscores.</span>
-              </div>
+            <form onSubmit={handleAddSubmit} className="p-6 space-y-4 max-h-[80vh] overflow-y-auto">
+              <div className="grid grid-cols-2 gap-4">
+                <div className="col-span-2 sm:col-span-1">
+                  <label className="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1.5">Client Identifier / Name</label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="e.g. janes_laptop"
+                    value={username}
+                    onChange={(e) => setUsername(e.target.value.replace(/[^a-zA-Z0-9_-]/g, ""))}
+                    className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-indigo-500"
+                  />
+                  <span className="text-[10px] text-slate-500 mt-1 block">Only letters, numbers, hyphens, and underscores.</span>
+                </div>
 
-              <div>
-                <label className="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1.5">Contact Email Address</label>
-                <input
-                  type="email"
-                  required
-                  placeholder="e.g. jane@company.com"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-indigo-500"
-                />
+                <div className="col-span-2 sm:col-span-1">
+                  <label className="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1.5">Contact Email Address</label>
+                  <input
+                    type="email"
+                    required
+                    placeholder="e.g. jane@company.com"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-indigo-500"
+                  />
+                </div>
               </div>
 
               <div className="grid grid-cols-2 gap-4">
@@ -391,6 +457,52 @@ export default function UsersTab({
                   />
                 </div>
 
+                <div>
+                  <label className="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1.5">Query Limit Count</label>
+                  <input
+                    type="number"
+                    min="0"
+                    required
+                    value={requestLimit}
+                    onChange={(e) => setRequestLimit(Math.max(0, parseInt(e.target.value) || 0))}
+                    className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-indigo-500"
+                  />
+                  <span className="text-[10px] text-slate-500 mt-1 block">0 = Unlimited queries</span>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1.5">Personal DNS Upstream</label>
+                  <select
+                    value={personalDnsProvider}
+                    onChange={(e) => setPersonalDnsProvider(e.target.value)}
+                    className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-indigo-500 cursor-pointer"
+                  >
+                    <option value="">Global Default Upstream</option>
+                    {providers.filter(p => p.enabled).map(p => (
+                      <option key={p.id} value={p.id}>{p.name}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1.5 font-sans">IPv6 Route Rule</label>
+                  <select
+                    value={ipv6Preference}
+                    onChange={(e) => setIpv6Preference(e.target.value)}
+                    className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-indigo-500 cursor-pointer"
+                  >
+                    <option value="default">System Default</option>
+                    <option value="prefer_ipv4">Prefer IPv4 Upstreams</option>
+                    <option value="prefer_ipv6">Prefer IPv6 Upstreams</option>
+                    <option value="ipv4_only">Block IPv6 / IPv4 Only</option>
+                    <option value="ipv6_only">Block IPv4 / IPv6 Only</option>
+                  </select>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 gap-4">
                 <div>
                   <label className="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1.5">Expire Date (Optional)</label>
                   <input
@@ -436,7 +548,7 @@ export default function UsersTab({
       {/* MODAL 2: EDIT USER DIALOG */}
       {isEditModalOpen && selectedUser && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-md flex items-center justify-center p-4 z-50">
-          <div className="bg-[#030712]/90 backdrop-blur-xl border border-white/10 rounded-3xl w-full max-w-md overflow-hidden shadow-2xl animate-in fade-in duration-200">
+          <div className="bg-[#030712]/90 backdrop-blur-xl border border-white/10 rounded-3xl w-full max-w-lg overflow-hidden shadow-2xl animate-in fade-in duration-200">
             <div className="p-6 border-b border-white/10 bg-white/5 flex justify-between items-center">
               <h5 className="text-lg font-bold text-white flex items-center space-x-2">
                 <Edit2 className="w-5 h-5 text-indigo-400" />
@@ -450,26 +562,28 @@ export default function UsersTab({
               </button>
             </div>
             
-            <form onSubmit={handleEditSubmit} className="p-6 space-y-4">
-              <div>
-                <label className="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1.5">Client ID (Read-only)</label>
-                <input
-                  type="text"
-                  disabled
-                  value={selectedUser.username}
-                  className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-sm text-slate-505 focus:outline-none cursor-not-allowed font-mono"
-                />
-              </div>
+            <form onSubmit={handleEditSubmit} className="p-6 space-y-4 max-h-[80vh] overflow-y-auto">
+              <div className="grid grid-cols-2 gap-4">
+                <div className="col-span-2 sm:col-span-1">
+                  <label className="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1.5">Client ID (Read-only)</label>
+                  <input
+                    type="text"
+                    disabled
+                    value={selectedUser.username}
+                    className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-sm text-slate-500 focus:outline-none cursor-not-allowed font-mono"
+                  />
+                </div>
 
-              <div>
-                <label className="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1.5">Email Address</label>
-                <input
-                  type="email"
-                  required
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-indigo-500"
-                />
+                <div className="col-span-2 sm:col-span-1">
+                  <label className="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1.5">Email Address</label>
+                  <input
+                    type="email"
+                    required
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-indigo-500"
+                  />
+                </div>
               </div>
 
               <div className="grid grid-cols-2 gap-4">
@@ -485,6 +599,52 @@ export default function UsersTab({
                   />
                 </div>
 
+                <div>
+                  <label className="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1.5">Query Limit Count</label>
+                  <input
+                    type="number"
+                    min="0"
+                    required
+                    value={requestLimit}
+                    onChange={(e) => setRequestLimit(Math.max(0, parseInt(e.target.value) || 0))}
+                    className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-indigo-500"
+                  />
+                  <span className="text-[10px] text-slate-500 mt-1 block">0 = Unlimited queries</span>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1.5">Personal DNS Upstream</label>
+                  <select
+                    value={personalDnsProvider}
+                    onChange={(e) => setPersonalDnsProvider(e.target.value)}
+                    className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-indigo-500 cursor-pointer"
+                  >
+                    <option value="">Global Default Upstream</option>
+                    {providers.filter(p => p.enabled).map(p => (
+                      <option key={p.id} value={p.id}>{p.name}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1.5">IPv6 Route Rule</label>
+                  <select
+                    value={ipv6Preference}
+                    onChange={(e) => setIpv6Preference(e.target.value)}
+                    className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-indigo-500 cursor-pointer"
+                  >
+                    <option value="default">System Default</option>
+                    <option value="prefer_ipv4">Prefer IPv4 Upstreams</option>
+                    <option value="prefer_ipv6">Prefer IPv6 Upstreams</option>
+                    <option value="ipv4_only">Block IPv6 / IPv4 Only</option>
+                    <option value="ipv6_only">Block IPv4 / IPv6 Only</option>
+                  </select>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 gap-4">
                 <div>
                   <label className="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1.5">Expire Date</label>
                   <input
