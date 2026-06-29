@@ -11,7 +11,13 @@ const app = express();
 const PORT = 3000;
 
 app.use(express.json());
-app.use(express.raw({ type: "application/dns-message", limit: "10mb" }));
+app.use(express.raw({
+  type: (req) => {
+    const contentType = req.headers["content-type"] || "";
+    return contentType.toLowerCase().includes("application/dns-message");
+  },
+  limit: "10mb"
+}));
 
 const DB_FILE = path.join(process.cwd(), "doh_database.json");
 
@@ -349,11 +355,15 @@ app.all(["/dns-query", "/dns-query/:token"], async (req, res) => {
       apiToken = (req.query.token as string) || req.params.token || "";
     }
 
+    if (apiToken) {
+      apiToken = apiToken.trim();
+    }
+
     if (!apiToken) {
       return res.status(401).json({ error: "Unauthorized: Missing API token." });
     }
 
-    const user = db.users.find(u => u.api_token === apiToken);
+    const user = db.users.find(u => u.api_token.toLowerCase() === apiToken.toLowerCase());
     if (!user) {
       return res.status(403).json({ error: "Unauthorized: Invalid API Token." });
     }
@@ -399,7 +409,10 @@ app.all(["/dns-query", "/dns-query/:token"], async (req, res) => {
       const dnsParam = req.query.dns as string;
       if (dnsParam) {
         try {
-          const base64 = dnsParam.replace(/-/g, "+").replace(/_/g, "/");
+          let base64 = dnsParam.replace(/-/g, "+").replace(/_/g, "/");
+          while (base64.length % 4) {
+            base64 += "=";
+          }
           dnsMessageBuffer = Buffer.from(base64, "base64");
           const decoded = parseDnsWireNameAndType(dnsMessageBuffer);
           queryName = decoded.name;

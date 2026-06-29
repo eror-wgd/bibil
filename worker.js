@@ -221,6 +221,10 @@ async function handleDnsQuery(request, env, ctx, url, settings) {
     }
   }
 
+  if (apiToken) {
+    apiToken = apiToken.trim();
+  }
+
   if (!apiToken) {
     return jsonResponse({ error: "Unauthorized: Missing API token in Authorization header, token query parameter, or URI path." }, 401);
   }
@@ -284,9 +288,13 @@ async function handleDnsQuery(request, env, ctx, url, settings) {
   } else if (request.method === "GET") {
     const dnsParam = url.searchParams.get("dns");
     if (dnsParam) {
-      // Base64Url decoded binary query
+      // Base64Url decoded binary query with robust padding restoration
       try {
-        const binaryString = atob(dnsParam.replace(/-/g, "+").replace(/_/g, "/"));
+        let base64 = dnsParam.replace(/-/g, "+").replace(/_/g, "/");
+        while (base64.length % 4) {
+          base64 += "=";
+        }
+        const binaryString = atob(base64);
         const len = binaryString.length;
         const bytes = new Uint8Array(len);
         for (let i = 0; i < len; i++) {
@@ -573,8 +581,12 @@ async function getCachedSettings(env) {
  * Retrieve cached user details to minimize DB hits on incoming queries
  */
 async function getCachedUser(env, apiToken) {
+  if (!apiToken) return null;
+  const trimmedToken = apiToken.trim();
+  const cacheKey = trimmedToken.toLowerCase();
+
   // Check local memory cache
-  const cached = MEMORY_CACHE.users.get(apiToken);
+  const cached = MEMORY_CACHE.users.get(cacheKey);
   const now = Date.now();
   if (cached && now < cached.expiresAt) {
     return cached.data;
@@ -583,9 +595,9 @@ async function getCachedUser(env, apiToken) {
   // Check KV cache
   if (env.CACHE_KV) {
     try {
-      const kvUser = await env.CACHE_KV.get(`user:${apiToken}`, { type: "json" });
+      const kvUser = await env.CACHE_KV.get(`user:${cacheKey}`, { type: "json" });
       if (kvUser) {
-        MEMORY_CACHE.users.set(apiToken, { data: kvUser, expiresAt: now + 5000 }); // Cache local 5s
+        MEMORY_CACHE.users.set(cacheKey, { data: kvUser, expiresAt: now + 5000 }); // Cache local 5s
         return kvUser;
       }
     } catch (e) {
@@ -596,15 +608,15 @@ async function getCachedUser(env, apiToken) {
   // Query D1 Database
   try {
     const user = await env.DB.prepare(
-      "SELECT id, username, email, api_token, status, created_at, expire_at, traffic_limit_gb, traffic_used, request_count FROM users WHERE api_token = ?"
-    ).bind(apiToken).first();
+      "SELECT id, username, email, api_token, status, created_at, expire_at, traffic_limit_gb, traffic_used, request_count FROM users WHERE LOWER(api_token) = LOWER(?)"
+    ).bind(trimmedToken).first();
 
     if (user) {
       // Save to KV and local memory
       if (env.CACHE_KV) {
-        await env.CACHE_KV.put(`user:${apiToken}`, JSON.stringify(user), { expirationTtl: 30 }); // Cache 30s in KV
+        await env.CACHE_KV.put(`user:${cacheKey}`, JSON.stringify(user), { expirationTtl: 30 }); // Cache 30s in KV
       }
-      MEMORY_CACHE.users.set(apiToken, { data: user, expiresAt: now + 5000 });
+      MEMORY_CACHE.users.set(cacheKey, { data: user, expiresAt: now + 5000 });
       return user;
     }
   } catch (err) {
@@ -712,6 +724,14 @@ async function handleApiRequest(request, env, ctx, url, settings) {
           id, username, email, api_token, now, expTimestamp, parseFloat(traffic_limit_gb || "50"), notes || ""
         ).run();
 
+        // Clear any stale cache for this token to make sure it functions immediately
+        if (env.CACHE_KV) {
+          await env.CACHE_KV.delete(`user:${api_token}`);
+          await env.CACHE_KV.delete(`user:${api_token.toLowerCase()}`);
+        }
+        MEMORY_CACHE.users.delete(api_token);
+        MEMORY_CACHE.users.delete(api_token.toLowerCase());
+
         const host = url.host || request.headers.get("host") || "your-worker.workers.dev";
         const protocol = url.protocol || "https:";
         const endpoint_url = `${protocol}//${host}/dns-query/${api_token}`;
@@ -736,8 +756,13 @@ async function handleApiRequest(request, env, ctx, url, settings) {
     if (request.method === "DELETE") {
       // First get the user token to delete from KV Cache
       const user = await env.DB.prepare("SELECT api_token FROM users WHERE id = ?").bind(userId).first();
-      if (user && env.CACHE_KV) {
-        await env.CACHE_KV.delete(`user:${user.api_token}`);
+      if (user) {
+        if (env.CACHE_KV) {
+          await env.CACHE_KV.delete(`user:${user.api_token}`);
+          await env.CACHE_KV.delete(`user:${user.api_token.toLowerCase()}`);
+        }
+        MEMORY_CACHE.users.delete(user.api_token);
+        MEMORY_CACHE.users.delete(user.api_token.toLowerCase());
       }
       
       await env.DB.prepare("DELETE FROM users WHERE id = ?").bind(userId).run();
@@ -771,8 +796,10 @@ async function handleApiRequest(request, env, ctx, url, settings) {
       // Clear caches
       if (env.CACHE_KV) {
         await env.CACHE_KV.delete(`user:${user.api_token}`);
+        await env.CACHE_KV.delete(`user:${user.api_token.toLowerCase()}`);
       }
       MEMORY_CACHE.users.delete(user.api_token);
+      MEMORY_CACHE.users.delete(user.api_token.toLowerCase());
 
       return jsonResponse({ success: true, message: "User profile updated successfully." });
     }
