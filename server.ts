@@ -631,7 +631,16 @@ app.post("/api/users", authenticateAdmin, (req, res) => {
   db.users.unshift(newUser);
   saveDatabase();
 
-  return res.json({ success: true, message: "User created successfully.", token: api_token });
+  const host = req.get("host") || "localhost:3000";
+  const protocol = req.protocol || "http";
+  const endpoint_url = `${protocol}://${host}/dns-query/${api_token}`;
+
+  return res.json({ 
+    success: true, 
+    message: "User created successfully.", 
+    token: api_token,
+    endpoint: endpoint_url 
+  });
 });
 
 app.put("/api/users/:id", authenticateAdmin, (req, res) => {

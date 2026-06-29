@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { Shield, Key, CheckCircle, XCircle, Trash2, Edit2, Plus, Calendar, AlertTriangle, FileText, Mail, Info } from "lucide-react";
+import { Shield, Key, CheckCircle, XCircle, Trash2, Edit2, Plus, Calendar, AlertTriangle, FileText, Mail, Info, Copy, Check } from "lucide-react";
 import { User } from "../types";
 
 interface UsersTabProps {
@@ -31,6 +31,7 @@ export default function UsersTab({
   const [notes, setNotes] = useState("");
 
   const [copiedToken, setCopiedToken] = useState<string | null>(null);
+  const [copiedDoH, setCopiedDoH] = useState<string | null>(null);
 
   // Filtered list
   const filteredUsers = users.filter(u => {
@@ -45,6 +46,12 @@ export default function UsersTab({
     navigator.clipboard.writeText(token);
     setCopiedToken(token);
     setTimeout(() => setCopiedToken(null), 2000);
+  };
+
+  const handleCopyDoHUrl = (url: string) => {
+    navigator.clipboard.writeText(url);
+    setCopiedDoH(url);
+    setTimeout(() => setCopiedDoH(null), 2000);
   };
 
   const handleOpenAddModal = () => {
@@ -137,7 +144,7 @@ export default function UsersTab({
             <thead>
               <tr className="border-b border-white/10 bg-white/5 text-slate-300 text-xs font-semibold uppercase tracking-wider">
                 <th className="py-4 px-6">User Profile</th>
-                <th className="py-4 px-6">Secure API Token</th>
+                <th className="py-4 px-6">Connection & Token</th>
                 <th className="py-4 px-6">Status</th>
                 <th className="py-4 px-6">Traffic Used / Limit</th>
                 <th className="py-4 px-6">Expiration</th>
@@ -173,23 +180,46 @@ export default function UsersTab({
                       </div>
                     </td>
 
-                    {/* Token */}
+                    {/* Token & Connection URLs */}
                     <td className="py-4 px-6 font-mono">
-                      <div className="flex items-center space-x-2">
-                        <span className="bg-white/5 px-2 py-1 rounded-lg border border-white/10 text-xs text-slate-300 max-w-[130px] truncate">
-                          {user.api_token.substring(0, 8)}••••••••
-                        </span>
-                        <button
-                          onClick={() => handleCopyToken(user.api_token)}
-                          className="p-1 hover:bg-white/10 rounded text-slate-400 hover:text-white transition"
-                          title="Copy Full Token"
-                        >
-                          {copiedToken === user.api_token ? (
-                            <span className="text-[10px] text-emerald-400 font-semibold px-1">Copied!</span>
-                          ) : (
-                            <Key className="w-3.5 h-3.5" />
-                          )}
-                        </button>
+                      <div className="space-y-2 max-w-xs">
+                        {/* Token Row */}
+                        <div className="flex items-center justify-between bg-white/5 px-2.5 py-1.5 rounded-xl border border-white/10 text-xs">
+                          <span className="text-slate-400 font-semibold select-none">Token:</span>
+                          <span className="text-slate-200 truncate mx-2 max-w-[100px]">
+                            {user.api_token.substring(0, 8)}••••••••
+                          </span>
+                          <button
+                            onClick={() => handleCopyToken(user.api_token)}
+                            className="p-1 hover:bg-white/10 rounded-lg text-slate-400 hover:text-white transition flex items-center space-x-1"
+                            title="Copy API Token"
+                          >
+                            {copiedToken === user.api_token ? (
+                              <Check className="w-3.5 h-3.5 text-emerald-400" />
+                            ) : (
+                              <Key className="w-3.5 h-3.5 text-indigo-400" />
+                            )}
+                          </button>
+                        </div>
+
+                        {/* DoH Endpoint Row */}
+                        <div className="flex items-center justify-between bg-white/5 px-2.5 py-1.5 rounded-xl border border-white/10 text-xs">
+                          <span className="text-slate-400 font-semibold select-none mr-2">DoH:</span>
+                          <span className="text-slate-300 truncate select-all text-[11px]" title={`${window.location.origin}/dns-query/${user.api_token}`}>
+                            {window.location.origin.replace(/^https?:\/\//, "")}/dns-query/{user.api_token.substring(0, 6)}...
+                          </span>
+                          <button
+                            onClick={() => handleCopyDoHUrl(`${window.location.origin}/dns-query/${user.api_token}`)}
+                            className="p-1 hover:bg-white/10 rounded-lg text-slate-400 hover:text-white transition flex items-center space-x-1 ml-2"
+                            title="Copy DoH Connection URL"
+                          >
+                            {copiedDoH === `${window.location.origin}/dns-query/${user.api_token}` ? (
+                              <Check className="w-3.5 h-3.5 text-emerald-400" />
+                            ) : (
+                              <Copy className="w-3.5 h-3.5 text-indigo-400" />
+                            )}
+                          </button>
+                        </div>
                       </div>
                     </td>
 

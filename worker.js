@@ -712,7 +712,16 @@ async function handleApiRequest(request, env, ctx, url, settings) {
           id, username, email, api_token, now, expTimestamp, parseFloat(traffic_limit_gb || "50"), notes || ""
         ).run();
 
-        return jsonResponse({ success: true, message: "User created.", token: api_token });
+        const host = url.host || request.headers.get("host") || "your-worker.workers.dev";
+        const protocol = url.protocol || "https:";
+        const endpoint_url = `${protocol}//${host}/dns-query/${api_token}`;
+
+        return jsonResponse({ 
+          success: true, 
+          message: "User created.", 
+          token: api_token, 
+          endpoint: endpoint_url 
+        });
       } catch (err) {
         return jsonResponse({ error: "Creation failed. Username/Email might already exist.", details: err.message }, 400);
       }
@@ -1112,8 +1121,9 @@ async function ensureDatabaseSetup(env) {
         .bind(key, val).run();
     }
 
-    // Insert a default active user 'admin_device' with token 'doh_admin_default_token' for instant testing
-    const defaultUserToken = "doh_admin_default_token";
+    // Insert a default active user 'admin_device' with a secure randomized token for instant testing
+    const defaultUserToken = "doh_" + Array.from(crypto.getRandomValues(new Uint8Array(20)))
+      .map(b => b.toString(16).padStart(2, "0")).join("");
     await env.DB.prepare(`
       INSERT OR IGNORE INTO users (id, username, email, api_token, status, created_at, expire_at, traffic_limit_gb, traffic_used, request_count, notes)
       VALUES (?, ?, ?, ?, 'enabled', ?, NULL, 100.0, 0.0, 0, ?)
