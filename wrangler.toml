@@ -12,12 +12,12 @@ ENVIRONMENT = "production"
 [[d1_databases]]
 binding = "DB"
 database_name = "doh-dns-db"
-database_id = "your-d1-database-uuid" # Replace with 'wrangler d1 create doh-dns-db' output
+database_id = "35e4d4b9-bc0a-405e-8935-f8f1c63b38b8" # Replace with 'wrangler d1 create doh-dns-db' output
 
 # Cloudflare KV Namespace Binding (for Cache & Rate Limiting)
 [[kv_namespaces]]
 binding = "CACHE_KV"
-id = "your-kv-namespace-uuid" # Replace with 'wrangler kv:namespace create CACHE_KV' output
+id = "65dcdb1a12ac4d7bb1aa5e7637b8b109" # Replace with 'wrangler kv:namespace create CACHE_KV' output
 
 # Build configurations (optional if using extra bundling, but standard ES Modules work natively)
 [build]
