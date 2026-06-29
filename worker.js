@@ -608,10 +608,16 @@ async function getCachedUser(env, apiToken) {
   // Query D1 Database
   try {
     const user = await env.DB.prepare(
-      "SELECT id, username, email, api_token, status, created_at, expire_at, traffic_limit_gb, traffic_used, request_count FROM users WHERE api_token = ? OR api_token = ?"
-    ).bind(trimmedToken, cacheKey).first();
+      "SELECT * FROM users WHERE api_token = ? OR api_token = ? OR LOWER(api_token) = ?"
+    ).bind(trimmedToken, cacheKey, cacheKey).first();
 
     if (user) {
+      // Ensure safe defaults for all fields to handle transitional or older database schemas
+      user.status = user.status || "enabled";
+      user.traffic_limit_gb = typeof user.traffic_limit_gb === "number" ? user.traffic_limit_gb : parseFloat(user.traffic_limit_gb || "50.0");
+      user.traffic_used = typeof user.traffic_used === "number" ? user.traffic_used : parseFloat(user.traffic_used || "0.0");
+      user.request_count = typeof user.request_count === "number" ? user.request_count : parseInt(user.request_count || "0");
+
       // Save to KV and local memory
       if (env.CACHE_KV) {
         await env.CACHE_KV.put(`user:${cacheKey}`, JSON.stringify(user), { expirationTtl: 30 }); // Cache 30s in KV
